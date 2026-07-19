@@ -1,0 +1,121 @@
+import { createAudioController } from "./audio.js";
+import { getAllCountries, searchCountry, suggestCountries } from "./dataService.js";
+import { GlobeExplorer } from "./globe.js";
+import { createStarfield } from "./starfield.js";
+import { $, normalizeCountryName } from "./utils.js";
+import { openCountryPanel, openDocumentary, renderSuggestions, setActiveMapMarker, setupMap, setupQuickGrid } from "./ui.js";
+
+const loaderSteps = ["Loading satellite...", "Loading terrain...", "Loading population...", "Connecting...", "Earth Online"];
+let activeCountry = null;
+let suggestionToken = 0;
+
+const globe = new GlobeExplorer($("#globeCanvas"), $("#targetRing"), $("#coordinates"));
+const audio = createAudioController();
+createStarfield($("#starfield"));
+setupQuickGrid((country) => locateCountry(country));
+
+bootstrap();
+
+async function bootstrap() {
+  animateLoader();
+  const countries = await getAllCountries();
+  setupMap(countries.slice(0, 42), (country) => locateCountry(country));
+  bindEvents();
+  setTimeout(() => {
+    const loader = $("#loader");
+    loader.classList.add("is-hidden");
+    setTimeout(() => {
+      loader.style.display = "none";
+    }, 760);
+    if (window.gsap) {
+      window.gsap.from(".topbar", { opacity: 0, y: -20, duration: 0.8, ease: "power2.out" });
+      window.gsap.from(".intro-panel", { opacity: 0, x: 28, duration: 0.9, delay: 0.15, ease: "power2.out" });
+    }
+  }, 2300);
+}
+
+function animateLoader() {
+  let index = 0;
+  const line = $("#loaderLine");
+  const timer = setInterval(() => {
+    index += 1;
+    line.textContent = loaderSteps[index] || loaderSteps.at(-1);
+    if (index >= loaderSteps.length - 1) clearInterval(timer);
+  }, 420);
+}
+
+function bindEvents() {
+  $("#searchForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    locateCountry($("#countrySearch").value);
+  });
+
+  $("#countrySearch").addEventListener("input", debounce(async (event) => {
+    const token = ++suggestionToken;
+    const suggestions = await suggestCountries(event.target.value);
+    if (token !== suggestionToken) return;
+    renderSuggestions(suggestions, (country) => locateCountry(country));
+  }, 180));
+
+  $("#closeDock").addEventListener("click", () => $("#infoDock").classList.remove("is-open"));
+  $("#closeDoc").addEventListener("click", closeDocumentary);
+  $("#exploreBtn").addEventListener("click", () => activeCountry && openDocumentary(activeCountry));
+  $("#mapModeBtn").addEventListener("click", () => {
+    document.body.classList.toggle("satellite-mode");
+    audio.ping(320);
+  });
+  $("#soundToggle").addEventListener("click", (event) => {
+    const active = audio.toggle();
+    event.currentTarget.classList.toggle("is-active", active);
+  });
+  $("#tiltToggle").addEventListener("click", () => {
+    const tilted = globe.toggleTilt();
+    $("#orbitStatus").textContent = tilted ? "Tilted" : "Autopilot";
+  });
+  $("#fullscreenBtn").addEventListener("click", () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDocumentary();
+  });
+}
+
+async function locateCountry(query) {
+  const name = String(query || "").trim();
+  if (!name) return;
+  try {
+    $("#countrySearch").value = name;
+    suggestionToken += 1;
+    renderSuggestions([], () => {});
+    const country = await searchCountry(name);
+    activeCountry = country;
+    const [lat, lon] = country.latlng || [0, 0];
+    globe.focusOn(lat, lon, true);
+    openCountryPanel(country);
+    setActiveMapMarker(country.name.common);
+    audio.ping(520);
+    history.replaceState(null, "", `#${encodeURIComponent(normalizeCountryName(country.name.common))}`);
+  } catch {
+    renderSuggestions([{ name: "Country not found", region: "Try another spelling", disabled: true }], () => {});
+  }
+}
+
+function closeDocumentary() {
+  const modal = $("#documentary");
+  modal.classList.remove("is-open");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+function debounce(callback, wait) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => callback(...args), wait);
+  };
+}
+
+window.addEventListener("load", () => {
+  const hash = decodeURIComponent(location.hash.replace("#", ""));
+  if (hash) locateCountry(hash);
+});
